@@ -12,21 +12,21 @@ CSV_FILE = "sensor_data.csv"
 
 # Create file with headers if it doesn't exist
 if not os.path.exists(CSV_FILE):
-    df = pd.DataFrame(columns=["timestamp", "accel_x", "accel_y", "accel_z", "gyro_x", "gyro_y", "gyro_z", "mag_x", "mag_y", "mag_z"])
+    df = pd.DataFrame(columns=["time", "ax", "ay", "az", "wx", "wy", "wz", "Bx", "By", "Bz"])
     df.to_csv(CSV_FILE, index=False)
 
 # Data model
 class SensorData(BaseModel):
-    timestamp: int
-    accel_x: float
-    accel_y: float
-    accel_z: float
-    gyro_x: float
-    gyro_y: float
-    gyro_z: float
-    mag_x: float
-    mag_y: float
-    mag_z: float
+    times: int
+    ax: float
+    ay: float
+    az: float
+    wx: float
+    wy: float
+    wz: float
+    Bx: float
+    By: float
+    Bz: float
 
 @app.post("/sensor")
 async def store_sensor_data(sensor: SensorData):
