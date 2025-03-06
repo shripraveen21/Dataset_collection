@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import List
 import pandas as pd
 import os
 from fastapi.responses import FileResponse
 
 app = FastAPI()
 
-# Define the base file name
+# Define base CSV file naming
 CSV_BASE_NAME = "sensor_data"
 CSV_EXTENSION = ".csv"
 
@@ -19,7 +20,7 @@ def get_new_filename():
 
 # Data model
 class SensorData(BaseModel):
-    times: int
+    time: float  # Keep time as float
     ax: float
     ay: float
     az: float
@@ -31,13 +32,13 @@ class SensorData(BaseModel):
     Bz: float
 
 @app.post("/sensor")
-async def store_sensor_data(sensor: SensorData):
+async def store_sensor_data(sensors: List[SensorData]):  # Accepts a list of sensor readings
     try:
         # Generate a new filename
         new_csv_file = get_new_filename()
 
-        # Convert incoming data to DataFrame
-        df = pd.DataFrame([sensor.dict()])
+        # Convert data to DataFrame
+        df = pd.DataFrame([sensor.dict() for sensor in sensors])
 
         # Save the new file
         df.to_csv(new_csv_file, index=False)
