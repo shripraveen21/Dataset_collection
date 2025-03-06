@@ -56,10 +56,15 @@ async def store_sensor_data(sensors: List[SensorData]):  # Accepts a list of sen
 @app.get("/download")
 async def download_csv():
     """Download the latest CSV file"""
-    latest_file = get_new_filename()  # Get the latest file name
-    latest_file_number = int(latest_file.split("_")[-1].split(".")[0]) - 1
-    latest_file = f"{CSV_BASE_NAME}_{latest_file_number}{CSV_EXTENSION}"
+    csv_files = sorted(
+        [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),  # Sort by file number
+        reverse=True  # Get the latest file
+    )
 
-    if os.path.exists(latest_file):
+    if csv_files:
+        latest_file = csv_files[0]  # Pick the most recent CSV file
         return FileResponse(latest_file, media_type="text/csv", filename=latest_file)
+
     return {"status": "error", "message": "No file available for download"}
+
