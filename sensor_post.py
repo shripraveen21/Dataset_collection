@@ -8,23 +8,37 @@ import joblib
 import numpy as np
 from scipy.stats import zscore, skew, kurtosis
 from scipy.fft import fft
+import requests
 
 app = FastAPI()
 
-# CSV file naming convention
+# File and model paths
 CSV_BASE_NAME = "sensor_data"
 CSV_EXTENSION = ".csv"
 FEATURES_FILE = "feature_extracted.csv"
-
-# ML Model File Name
 MODEL_FILE = "model.pkl"
+MODEL_URL = "https://github.com/shripraveen21/Dataset_collection/raw/main/model.pkl"
 
-# Ensure ML model exists
-if not os.path.exists(MODEL_FILE):
-    raise FileNotFoundError("Model file not found! Please upload 'model.pkl' to the server.")
+# Function to download the model if not present
+def download_model():
+    """Downloads the model.pkl file from GitHub if it's missing."""
+    if not os.path.exists(MODEL_FILE):
+        print("🔍 Model file not found. Downloading...")
+        response = requests.get(MODEL_URL, stream=True)
+        if response.status_code == 200:
+            with open(MODEL_FILE, "wb") as file:
+                for chunk in response.iter_content(chunk_size=1024):
+                    file.write(chunk)
+            print("✅ Model downloaded successfully!")
+        else:
+            raise FileNotFoundError("❌ Failed to download model.pkl from GitHub.")
+
+# Ensure model exists before proceeding
+download_model()
 
 # Load the trained ML model
 model = joblib.load(MODEL_FILE)
+print("✅ Model loaded successfully!")
 
 # Function to generate a new CSV filename
 def get_new_filename():
