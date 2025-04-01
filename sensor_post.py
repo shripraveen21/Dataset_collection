@@ -4,23 +4,38 @@ from typing import List
 import pandas as pd
 import os
 from fastapi.responses import FileResponse
+import joblib
+import numpy as np
+from scipy.stats import zscore, skew, kurtosis
+from scipy.fft import fft
 
 app = FastAPI()
 
-# Define base CSV file naming
+# CSV file naming convention
 CSV_BASE_NAME = "sensor_data"
 CSV_EXTENSION = ".csv"
+FEATURES_FILE = "feature_extracted.csv"
 
-# Function to generate a new filename with an incremented number
+# ML Model File Name
+MODEL_FILE = "model.pkl"
+
+# Ensure ML model exists
+if not os.path.exists(MODEL_FILE):
+    raise FileNotFoundError("Model file not found! Please upload 'model.pkl' to the server.")
+
+# Load the trained ML model
+model = joblib.load(MODEL_FILE)
+
+# Function to generate a new CSV filename
 def get_new_filename():
     i = 1
     while os.path.exists(f"{CSV_BASE_NAME}_{i}{CSV_EXTENSION}"):
         i += 1
     return f"{CSV_BASE_NAME}_{i}{CSV_EXTENSION}"
 
-# Data model
+# Data model for incoming sensor data
 class SensorData(BaseModel):
-    time: float  # Keep time as float
+    time: float  
     ax: float
     ay: float
     az: float
@@ -32,15 +47,11 @@ class SensorData(BaseModel):
     Bz: float
 
 @app.post("/sensor")
-async def store_sensor_data(sensors: List[SensorData]):  # Accepts a list of sensor readings
+async def store_sensor_data(sensors: List[SensorData]):
+    """Stores incoming sensor data as a CSV file"""
     try:
-        # Generate a new filename
         new_csv_file = get_new_filename()
-
-        # Convert data to DataFrame
         df = pd.DataFrame([sensor.dict() for sensor in sensors])
-
-        # Save the new file
         df.to_csv(new_csv_file, index=False)
 
         # Remove old CSV files (keep only the latest)
@@ -55,16 +66,127 @@ async def store_sensor_data(sensors: List[SensorData]):  # Accepts a list of sen
 
 @app.get("/download")
 async def download_csv():
-    """Download the latest CSV file"""
+    """Downloads the latest stored CSV file"""
     csv_files = sorted(
         [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
-        key=lambda x: int(x.split("_")[-1].split(".")[0]),  # Sort by file number
-        reverse=True  # Get the latest file
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),
+        reverse=True  
     )
 
     if csv_files:
-        latest_file = csv_files[0]  # Pick the most recent CSV file
+        latest_file = csv_files[0]
         return FileResponse(latest_file, media_type="text/csv", filename=latest_file)
 
     return {"status": "error", "message": "No file available for download"}
 
+### ------------------ Z-SCORE NORMALIZATION ------------------
+def normalize_data(data):
+    """Applies Z-score normalization to sensor columns"""
+    sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
+    data[sensor_columns] = data[sensor_columns].apply(zscore)
+    return data
+
+### ------------------ FEATURE EXTRACTION ------------------
+# Jerk Calculation Function
+def compute_jerk(segment, axis):
+    """Computes the Jerk Magnitude (JM) for a given axis."""
+    diff = np.diff(segment[axis].to_numpy(), n=1)
+    jerk = np.sqrt(diff ** 2)
+    return np.mean(jerk) if len(jerk) > 0 else 0
+
+# Feature extraction function
+def extract_features(segment, axis):
+    """Extracts statistical, frequency, and novel features from a single axis segment."""
+
+    # Basic Statistical Features
+    min_val = segment[axis].min()
+    max_val = segment[axis].max()
+    mean_val = segment[axis].mean()
+    skewness = skew(segment[axis].dropna())
+    kurtosis_val = kurtosis(segment[axis].dropna())
+    
+    # Jerk Magnitude (JM)
+    jerk_mag = compute_jerk(segment, axis)
+    
+    # Autocorrelation Features (lags 1-11)
+    autocorr_vals = [segment[axis].autocorr(lag=i) for i in range(1, 12)]
+    
+    # Frequency Domain Features (Top 5 frequencies and their amplitudes)
+    segment_data = segment[axis].fillna(0).to_numpy()
+    freq_data = np.abs(fft(segment_data))
+    sorted_indices = np.argsort(freq_data)[::-1]  # Sort frequencies by magnitude, descending
+    top_freqs = sorted_indices[:5]
+    top_amplitudes = freq_data[top_freqs]
+    
+    # Frequency-Domain Peak Ratio (FDPR)
+    low_freq_energy = np.sum(freq_data[:3])  # Sum of energy in 1-3 Hz range
+    total_energy = np.sum(freq_data)
+    fdpr = (low_freq_energy / total_energy) if total_energy > 0 else 0
+
+    features = {
+        f'{axis}_min': min_val,
+        f'{axis}_max': max_val,
+        f'{axis}_mean': mean_val,
+        f'{axis}_skewness': skewness,
+        f'{axis}_kurtosis': kurtosis_val,
+        f'{axis}_jerk_magnitude': jerk_mag,
+        f'{axis}_fdpr': fdpr,
+    }
+
+    # Add autocorrelation features
+    for i, autocorr_val in enumerate(autocorr_vals, start=1):
+        features[f'{axis}_autocorr_lag_{i}'] = autocorr_val
+    
+    # Add frequency and amplitude features
+    for i, (freq, amp) in enumerate(zip(top_freqs, top_amplitudes), start=1):
+        features[f'{axis}_freq_{i}'] = freq
+        features[f'{axis}_amplitude_{i}'] = amp
+    
+    return pd.Series(features)
+
+def extract_features_sliding_window(data, window_size=60, step_size=30):
+    """Extracts features using a sliding window approach (without Participant_ID/Trial_Number logic)."""
+    features = []
+    sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
+    
+    for start in range(0, len(data) - window_size + 1, step_size):
+        window = data.iloc[start:start + window_size]
+        feature_row = {}
+
+        # Extract features for each sensor axis
+        for axis in sensor_columns:
+            axis_features = extract_features(window, axis)
+            feature_row.update(axis_features)
+        
+        features.append(feature_row)
+
+    return pd.DataFrame(features)
+
+@app.get("/predict")
+async def run_ml_prediction():
+    """Runs ML prediction on the latest stored CSV file and returns output"""
+    csv_files = sorted(
+        [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
+        key=lambda x: int(x.split("_")[-1].split(".")[0]),
+        reverse=True  
+    )
+
+    if not csv_files:
+        return {"status": "error", "message": "No CSV file found for prediction"}
+
+    latest_file = csv_files[0]
+    df = pd.read_csv(latest_file)
+
+    # Step 1: Apply Z-score Normalization
+    df = normalize_data(df)
+
+    # Step 2: Extract Features
+    feature_data = extract_features_sliding_window(df)
+
+    # Step 3: Save Features to CSV
+    feature_data.to_csv(FEATURES_FILE, index=False)
+
+    # Step 4: Perform Prediction
+    predictions = model.predict(feature_data)
+
+    return {"status": "success", "predictions": predictions.tolist()}
