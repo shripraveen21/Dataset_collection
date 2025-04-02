@@ -18,6 +18,8 @@ CSV_EXTENSION = ".csv"
 FEATURES_FILE = "feature_extracted.csv"
 MODEL_FILE = "model.pkl"
 MODEL_URL = "https://github.com/shripraveen21/Dataset_collection/raw/main/model.pkl"
+PUSHBULLET_API_KEY = "o.vfCOlEsqdU8eQBSmYSWwijLc6puBeQtf"
+PUSHBULLET_API_URL = "https://api.pushbullet.com/v2/pushes"
 
 # Function to download the model if not present
 def download_model():
@@ -47,6 +49,32 @@ def get_new_filename():
         i += 1
     return f"{CSV_BASE_NAME}_{i}{CSV_EXTENSION}"
 
+# Function to send pushbullet notification
+def send_pushbullet_notification(title, message):
+    """Sends a notification to Pushbullet."""
+    headers = {
+        "Access-Token": PUSHBULLET_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    data = {
+        "type": "note",
+        "title": title,
+        "body": message
+    }
+    
+    try:
+        response = requests.post(PUSHBULLET_API_URL, headers=headers, json=data)
+        if response.status_code == 200:
+            print("✅ Notification sent successfully!")
+            return True
+        else:
+            print(f"❌ Failed to send notification: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"❌ Error sending notification: {str(e)}")
+        return False
+
 # Data model for incoming sensor data
 class SensorData(BaseModel):
     time: float  
@@ -60,22 +88,120 @@ class SensorData(BaseModel):
     By: float
     Bz: float
 
+# Function to run prediction
+async def predict_fall(csv_file):
+    """Runs ML prediction on the specified CSV file."""
+    try:
+        print(f"🔍 Analyzing file: {csv_file}")
+        
+        # Step 1: Load CSV
+        df = pd.read_csv(csv_file)
+        print(f"📊 Loaded Data Shape: {df.shape}")
+        
+        if df.empty:
+            error_msg = "CSV file is empty"
+            send_pushbullet_notification("Fall Detection Error", error_msg)
+            return {"status": "error", "message": error_msg}
+            
+        # Step 2: Check peak acceleration
+        acceleration_magnitude = np.sqrt(df['ax']**2 + df['ay']**2 + df['az']**2)
+        peak_acceleration = acceleration_magnitude.max()
+        print(f"⚡ Peak Acceleration: {peak_acceleration} m/s²")
+        
+        if peak_acceleration < 15:
+            message = f"Low peak acceleration detected ({peak_acceleration:.2f} m/s²). Classified as non-fall."
+            send_pushbullet_notification("Fall Detection Result", message)
+            return {"status": "success", "prediction": "non_fall", "reason": "low_acceleration"}
+            
+        # Step 3: Handle Missing Values (NaN)
+        missing_values = df.isnull().sum().sum()
+        if missing_values > 0:
+            print(f"⚠ Warning: Found {missing_values} missing values in data.")
+            df = df.fillna(df.mean())  # Impute missing values with column mean
+        
+        # Step 4: Apply Z-score Normalization
+        sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
+        df[sensor_columns] = df[sensor_columns].apply(zscore)
+        
+        # Step 5: Extract Features
+        feature_data = extract_features_sliding_window(df)
+        print(f"🧩 Extracted Feature Shape: {feature_data.shape}")
+        
+        if feature_data.empty:
+            error_msg = "Feature extraction returned empty data"
+            send_pushbullet_notification("Fall Detection Error", error_msg)
+            return {"status": "error", "message": error_msg}
+            
+        # Step 6: Handle Missing Values in Features
+        missing_features = feature_data.isnull().sum().sum()
+        if missing_features > 0:
+            print(f"⚠ Warning: Found {missing_features} missing values in extracted features.")
+            feature_data = feature_data.fillna(0)  # Replace NaNs with 0
+            
+        # Step 7: Save Features to CSV
+        feature_data.to_csv(FEATURES_FILE, index=False)
+        
+        # Step 8: Perform Prediction
+        expected_features = model.n_features_in_
+        actual_features = feature_data.shape[1]
+        
+        if actual_features != expected_features:
+            error_msg = f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
+            send_pushbullet_notification("Fall Detection Error", error_msg)
+            return {"status": "error", "message": error_msg}
+        
+        predictions = model.predict(feature_data)
+        print(f"🔮 Raw Predictions: {predictions.tolist()}")
+        
+        # Prioritize Falls if Detected
+        fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
+        result = "non_fall"
+        
+        for fall in fall_types:
+            if fall in predictions:
+                result = fall
+                break
+        
+        # Send notification based on result
+        if result != "non_fall":
+            message = f"⚠ ALERT! {result.replace('_', ' ').title()} detected! Peak acceleration: {peak_acceleration:.2f} m/s²"
+        else:
+            message = f"Normal activity detected. Peak acceleration: {peak_acceleration:.2f} m/s²"
+            
+        send_pushbullet_notification("Fall Detection Result", message)
+        return {"status": "success", "prediction": result, "peak_acceleration": float(peak_acceleration)}
+        
+    except Exception as e:
+        error_msg = f"Prediction failed: {str(e)}"
+        send_pushbullet_notification("Fall Detection Error", error_msg)
+        return {"status": "error", "message": error_msg}
+
 @app.post("/sensor")
 async def store_sensor_data(sensors: List[SensorData]):
-    """Stores incoming sensor data as a CSV file"""
+    """Stores incoming sensor data as a CSV file and automatically runs prediction"""
     try:
+        # Store data
         new_csv_file = get_new_filename()
         df = pd.DataFrame([sensor.dict() for sensor in sensors])
         df.to_csv(new_csv_file, index=False)
-
+        
         # Remove old CSV files (keep only the latest)
         for file in os.listdir():
-            if file.startswith(CSV_BASE_NAME) and file != new_csv_file:
+            if file.startswith(CSV_BASE_NAME) and file.endswith(CSV_EXTENSION) and file != new_csv_file:
                 os.remove(file)
-
-        return {"status": "success", "message": f"Data stored in {new_csv_file}"}
+        
+        # Automatically run prediction
+        prediction_result = await predict_fall(new_csv_file)
+        
+        return {
+            "status": "success", 
+            "message": f"Data stored in {new_csv_file}",
+            "prediction_result": prediction_result
+        }
     
     except Exception as e:
+        error_msg = f"Error processing sensor data: {str(e)}"
+        send_pushbullet_notification("Fall Detection Error", error_msg)
         return {"status": "error", "detail": str(e)}
 
 @app.get("/download")
@@ -194,58 +320,9 @@ def extract_features_sliding_window(data, window_size=60, step_size=30):
 
     return pd.DataFrame(features)
 
-
-# def extract_features_sliding_window(data, window_size=60, step_size=30):
-#     """Extracts features using a sliding window approach (without Participant_ID/Trial_Number logic)."""
-#     features = []
-#     sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
-    
-#     for start in range(0, len(data) - window_size + 1, step_size):
-#         window = data.iloc[start:start + window_size]
-#         feature_row = {}
-
-#         # Extract features for each sensor axis
-#         for axis in sensor_columns:
-#             axis_features = extract_features(window, axis)
-#             feature_row.update(axis_features)
-        
-#         features.append(feature_row)
-
-#     return pd.DataFrame(features)
-
-# @app.get("/predict")
-# async def run_ml_prediction():
-#     """Runs ML prediction on the latest stored CSV file and returns output"""
-#     csv_files = sorted(
-#         [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
-#         key=lambda x: int(x.split("_")[-1].split(".")[0]),
-#         reverse=True  
-#     )
-
-#     if not csv_files:
-#         return {"status": "error", "message": "No CSV file found for prediction"}
-
-#     latest_file = csv_files[0]
-#     df = pd.read_csv(latest_file)
-
-#     # Step 1: Apply Z-score Normalization
-#     df = normalize_data(df)
-
-#     # Step 2: Extract Features
-#     feature_data = extract_features_sliding_window(df)
-
-#     # Step 3: Save Features to CSV
-#     feature_data.to_csv(FEATURES_FILE, index=False)
-
-#     # Step 4: Perform Prediction
-#     predictions = model.predict(feature_data)
-
-#     return {"status": "success", "predictions": predictions.tolist()}
 @app.get("/predict")
 async def run_ml_prediction():
     """Runs ML prediction on the latest stored CSV file and returns output"""
-
-    # Step 1: Find the latest CSV file
     csv_files = sorted(
         [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
         key=lambda x: int(x.split("_")[-1].split(".")[0]),
@@ -256,84 +333,4 @@ async def run_ml_prediction():
         return {"status": "error", "message": "No CSV file found for prediction"}
 
     latest_file = csv_files[0]
-    print(f"🔍 Using file: {latest_file}")
-
-    # Step 2: Load CSV
-    try:
-        df = pd.read_csv(latest_file)
-        print(f"📊 Loaded Data Shape: {df.shape}")
-        print(df.head())
-
-        if df.empty:
-            return {"status": "error", "message": "CSV file is empty"}
-    except Exception as e:
-        return {"status": "error", "message": f"Failed to read CSV: {e}"}
-
-    # Step 3: Handle Missing Values (NaN)
-    try:
-        missing_values = df.isnull().sum().sum()
-        if missing_values > 0:
-            print(f"⚠️ Warning: Found {missing_values} missing values in data.")
-            df = df.fillna(df.mean())  # Impute missing values with column mean
-            print("✅ Missing values handled using column mean.")
-    except Exception as e:
-        return {"status": "error", "message": f"NaN handling failed: {e}"}
-
-    # Step 4: Apply Z-score Normalization
-    try:
-        df = normalize_data(df)
-        print("✅ Normalization complete")
-    except Exception as e:
-        return {"status": "error", "message": f"Normalization failed: {e}"}
-
-    # Step 5: Extract Features
-    try:
-        feature_data = extract_features_sliding_window(df)
-        print(f"🧩 Extracted Feature Shape: {feature_data.shape}")
-        print(feature_data.head())
-
-        if feature_data.empty:
-            return {"status": "error", "message": "Feature extraction returned empty data"}
-    except Exception as e:
-        return {"status": "error", "message": f"Feature extraction failed: {e}"}
-
-    # Step 6: Handle Missing Values in Features (NaN)
-    try:
-        missing_features = feature_data.isnull().sum().sum()
-        if missing_features > 0:
-            print(f"⚠️ Warning: Found {missing_features} missing values in extracted features.")
-            feature_data = feature_data.fillna(0)  # Replace NaNs with 0
-            print("✅ NaN values in features replaced with 0.")
-    except Exception as e:
-        return {"status": "error", "message": f"NaN handling in features failed: {e}"}
-
-    # Step 7: Save Features to CSV
-    try:
-        feature_data.to_csv(FEATURES_FILE, index=False)
-    except Exception as e:
-        return {"status": "error", "message": f"Failed to save features CSV: {e}"}
-
-    try:
-            expected_features = model.n_features_in_
-            actual_features = feature_data.shape[1]
-    
-            if actual_features != expected_features:
-                return {
-                    "status": "error",
-                    "message": f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
-                }
-    
-            predictions = model.predict(feature_data)
-            print(f"🔮 Raw Predictions: {predictions.tolist()}")
-    
-            # **Prioritize Falls if Detected**
-            fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
-            for fall in fall_types:
-                if fall in predictions:
-                    return {"status": "success", "prediction": fall}
-    
-            # If no falls, return "non_fall"
-            return {"status": "success", "prediction": "non_fall"}
-    
-    except Exception as e:
-        return {"status": "error", "message": f"Model prediction failed: {e}"}
+    return await predict_fall(latest_file)
