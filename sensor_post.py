@@ -88,6 +88,101 @@ class SensorData(BaseModel):
     By: float
     Bz: float
 
+# # Function to run prediction
+# async def predict_fall(csv_file):
+#     """Runs ML prediction on the specified CSV file."""
+#     try:
+#         print(f"🔍 Analyzing file: {csv_file}")
+        
+#         # Step 1: Load CSV
+#         df = pd.read_csv(csv_file)
+#         print(f"📊 Loaded Data Shape: {df.shape}")
+        
+#         if df.empty:
+#             error_msg = "CSV file is empty"
+#             send_pushbullet_notification("Fall Detection Error", error_msg)
+#             return {"status": "error", "message": error_msg}
+            
+#         # Step 2: Check peak acceleration
+#         acceleration_magnitude = np.sqrt(df['ax']**2 + df['ay']**2 + df['az']**2)
+#         peak_acceleration = acceleration_magnitude.max()
+#         print(f"⚡ Peak Acceleration: {peak_acceleration} m/s²")
+        
+#         if peak_acceleration < 15:
+#             message = f"Low peak acceleration detected ({peak_acceleration:.2f} m/s²). Classified as non-fall."
+#             send_pushbullet_notification("Fall Detection Result", message)
+#             return {"status": "success", "prediction": "non_fall", "reason": "low_acceleration"}
+            
+#         # Step 3: Handle Missing Values (NaN)
+#         missing_values = df.isnull().sum().sum()
+#         if missing_values > 0:
+#             print(f"⚠ Warning: Found {missing_values} missing values in data.")
+#             df = df.fillna(df.mean())  # Impute missing values with column mean
+        
+#         # Step 4: Apply Z-score Normalization
+#         sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
+#         df[sensor_columns] = df[sensor_columns].apply(zscore)
+        
+#         # Step 5: Extract Features
+#         feature_data = extract_features_sliding_window(df)
+#         print(f"🧩 Extracted Feature Shape: {feature_data.shape}")
+        
+#         if feature_data.empty:
+#             error_msg = "Feature extraction returned empty data"
+#             send_pushbullet_notification("Fall Detection Error", error_msg)
+#             return {"status": "error", "message": error_msg}
+            
+#         # Step 6: Handle Missing Values in Features
+#         missing_features = feature_data.isnull().sum().sum()
+#         if missing_features > 0:
+#             print(f"⚠ Warning: Found {missing_features} missing values in extracted features.")
+#             feature_data = feature_data.fillna(0)  # Replace NaNs with 0
+            
+#         # Step 7: Save Features to CSV
+#         feature_data.to_csv(FEATURES_FILE, index=False)
+        
+#         # Step 8: Perform Prediction
+#         expected_features = model.n_features_in_
+#         actual_features = feature_data.shape[1]
+        
+#         if actual_features != expected_features:
+#             error_msg = f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
+#             send_pushbullet_notification("Fall Detection Error", error_msg)
+#             return {"status": "error", "message": error_msg}
+        
+#         predictions = model.predict(feature_data)
+#         print(f"🔮 Raw Predictions: {predictions.tolist()}")
+        
+#         # Prioritize Falls if Detected
+#         fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
+#         result = "non_fall"
+        
+#         for fall in fall_types:
+#             if fall in predictions:
+#                 result = fall
+#                 break
+        
+#         # Send notification based on result
+#         if result != "non_fall":
+#             message = f"⚠ ALERT! {result.replace('_', ' ').title()} detected! Peak acceleration: {peak_acceleration:.2f} m/s²"
+#         else:
+#             message = f"Normal activity detected. Peak acceleration: {peak_acceleration:.2f} m/s²"
+            
+#         send_pushbullet_notification("Fall Detection Result", message)
+#         return {"status": "success", "prediction": result, "peak_acceleration": float(peak_acceleration)}
+        
+#     except Exception as e:
+#         error_msg = f"Prediction failed: {str(e)}"
+#         send_pushbullet_notification("Fall Detection Error", error_msg)
+#         return {"status": "error", "message": error_msg}
+
+from scipy.signal import butter, filtfilt
+
+# Function to create a Butterworth low-pass filter
+def create_lowpass_filter(sampling_rate, cutoff=5, order=4):
+    nyquist = sampling_rate / 2
+    return butter(order, cutoff / nyquist, btype='low')
+
 # Function to run prediction
 async def predict_fall(csv_file):
     """Runs ML prediction on the specified CSV file."""
@@ -103,27 +198,35 @@ async def predict_fall(csv_file):
             send_pushbullet_notification("Fall Detection Error", error_msg)
             return {"status": "error", "message": error_msg}
             
-        # Step 2: Check peak acceleration
-        acceleration_magnitude = np.sqrt(df['ax']**2 + df['ay']**2 + df['az']**2)
-        peak_acceleration = acceleration_magnitude.max()
-        print(f"⚡ Peak Acceleration: {peak_acceleration} m/s²")
-        
+        # Step 2: Calculate sampling rate
+        df['time_diff'] = df['time'].diff().fillna(0)
+        sampling_rate = 1 / df['time_diff'].mean()
+
+        # Step 3: Apply low-pass filter to acceleration magnitude
+        df['acc_mag'] = np.sqrt(df['ax']**2 + df['ay']**2 + df['az']**2)
+        b, a = create_lowpass_filter(sampling_rate)
+        df['acc_mag_filtered'] = filtfilt(b, a, df['acc_mag'])
+
+        # Step 4: Find peak acceleration after filtering
+        peak_acceleration = df['acc_mag_filtered'].max()
+        print(f"⚡ Peak Acceleration (Filtered): {peak_acceleration:.2f} m/s²")
+
         if peak_acceleration < 15:
             message = f"Low peak acceleration detected ({peak_acceleration:.2f} m/s²). Classified as non-fall."
             send_pushbullet_notification("Fall Detection Result", message)
             return {"status": "success", "prediction": "non_fall", "reason": "low_acceleration"}
-            
-        # Step 3: Handle Missing Values (NaN)
+
+        # Step 5: Handle Missing Values (NaN)
         missing_values = df.isnull().sum().sum()
         if missing_values > 0:
             print(f"⚠ Warning: Found {missing_values} missing values in data.")
             df = df.fillna(df.mean())  # Impute missing values with column mean
         
-        # Step 4: Apply Z-score Normalization
+        # Step 6: Apply Z-score Normalization
         sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
         df[sensor_columns] = df[sensor_columns].apply(zscore)
         
-        # Step 5: Extract Features
+        # Step 7: Extract Features
         feature_data = extract_features_sliding_window(df)
         print(f"🧩 Extracted Feature Shape: {feature_data.shape}")
         
@@ -132,16 +235,16 @@ async def predict_fall(csv_file):
             send_pushbullet_notification("Fall Detection Error", error_msg)
             return {"status": "error", "message": error_msg}
             
-        # Step 6: Handle Missing Values in Features
+        # Step 8: Handle Missing Values in Features
         missing_features = feature_data.isnull().sum().sum()
         if missing_features > 0:
             print(f"⚠ Warning: Found {missing_features} missing values in extracted features.")
             feature_data = feature_data.fillna(0)  # Replace NaNs with 0
             
-        # Step 7: Save Features to CSV
+        # Step 9: Save Features to CSV
         feature_data.to_csv(FEATURES_FILE, index=False)
         
-        # Step 8: Perform Prediction
+        # Step 10: Perform Prediction
         expected_features = model.n_features_in_
         actual_features = feature_data.shape[1]
         
@@ -153,7 +256,7 @@ async def predict_fall(csv_file):
         predictions = model.predict(feature_data)
         print(f"🔮 Raw Predictions: {predictions.tolist()}")
         
-        # Prioritize Falls if Detected
+        # Step 11: Determine Fall Type
         fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
         result = "non_fall"
         
@@ -162,7 +265,7 @@ async def predict_fall(csv_file):
                 result = fall
                 break
         
-        # Send notification based on result
+        # Step 12: Send Notification
         if result != "non_fall":
             message = f"⚠ ALERT! {result.replace('_', ' ').title()} detected! Peak acceleration: {peak_acceleration:.2f} m/s²"
         else:
