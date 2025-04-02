@@ -313,27 +313,27 @@ async def run_ml_prediction():
     except Exception as e:
         return {"status": "error", "message": f"Failed to save features CSV: {e}"}
 
-try:
-        expected_features = model.n_features_in_
-        actual_features = feature_data.shape[1]
-
-        if actual_features != expected_features:
-            return {
-                "status": "error",
-                "message": f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
-            }
-
-        predictions = model.predict(feature_data)
-        print(f"🔮 Raw Predictions: {predictions.tolist()}")
-
-        # **Prioritize Falls if Detected**
-        fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
-        for fall in fall_types:
-            if fall in predictions:
-                return {"status": "success", "prediction": fall}
-
-        # If no falls, return "non_fall"
-        return {"status": "success", "prediction": "non_fall"}
-
+    try:
+            expected_features = model.n_features_in_
+            actual_features = feature_data.shape[1]
+    
+            if actual_features != expected_features:
+                return {
+                    "status": "error",
+                    "message": f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
+                }
+    
+            predictions = model.predict(feature_data)
+            print(f"🔮 Raw Predictions: {predictions.tolist()}")
+    
+            # **Prioritize Falls if Detected**
+            fall_types = ["forward_fall", "backward_fall", "lateral_fall"]
+            for fall in fall_types:
+                if fall in predictions:
+                    return {"status": "success", "prediction": fall}
+    
+            # If no falls, return "non_fall"
+            return {"status": "success", "prediction": "non_fall"}
+    
     except Exception as e:
         return {"status": "error", "message": f"Model prediction failed: {e}"}
