@@ -159,7 +159,7 @@ def extract_features(segment, axis):
     return pd.Series(features)
 
 def extract_features_sliding_window(data, window_size=60, step_size=30):
-    """Extracts features using a sliding window approach (without Participant_ID/Trial_Number logic)."""
+    """Extracts features using a sliding window approach."""
     features = []
     sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
     
@@ -172,9 +172,46 @@ def extract_features_sliding_window(data, window_size=60, step_size=30):
             axis_features = extract_features(window, axis)
             feature_row.update(axis_features)
         
+        # Compute Additional Global Features
+        acc_magnitude = np.sqrt(window['ax']**2 + window['ay']**2 + window['az']**2)
+        gyro_magnitude = np.sqrt(window['wx']**2 + window['wy']**2 + window['wz']**2)
+        
+        # Vertical Impact Ratio (VIR)
+        vir = np.mean(np.abs(window['az']) / (acc_magnitude + 1e-6))  # Avoid division by zero
+        
+        # Angular Momentum Change (AMC)
+        amc = np.mean(np.sqrt(np.diff(window['wx'])**2 + np.diff(window['wy'])**2 + np.diff(window['wz'])**2))
+        
+        # Energy Expenditure Index (EEI)
+        eei = np.trapz(acc_magnitude, dx=1)  # Integrate acceleration over time
+        
+        # Add new global features to the row
+        feature_row['vir'] = vir
+        feature_row['amc'] = amc
+        feature_row['eei'] = eei
+        
         features.append(feature_row)
 
     return pd.DataFrame(features)
+
+
+# def extract_features_sliding_window(data, window_size=60, step_size=30):
+#     """Extracts features using a sliding window approach (without Participant_ID/Trial_Number logic)."""
+#     features = []
+#     sensor_columns = ['ax', 'ay', 'az', 'wx', 'wy', 'wz', 'Bx', 'By', 'Bz']
+    
+#     for start in range(0, len(data) - window_size + 1, step_size):
+#         window = data.iloc[start:start + window_size]
+#         feature_row = {}
+
+#         # Extract features for each sensor axis
+#         for axis in sensor_columns:
+#             axis_features = extract_features(window, axis)
+#             feature_row.update(axis_features)
+        
+#         features.append(feature_row)
+
+#     return pd.DataFrame(features)
 
 # @app.get("/predict")
 # async def run_ml_prediction():
