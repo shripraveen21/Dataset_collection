@@ -176,9 +176,39 @@ def extract_features_sliding_window(data, window_size=60, step_size=30):
 
     return pd.DataFrame(features)
 
+# @app.get("/predict")
+# async def run_ml_prediction():
+#     """Runs ML prediction on the latest stored CSV file and returns output"""
+#     csv_files = sorted(
+#         [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
+#         key=lambda x: int(x.split("_")[-1].split(".")[0]),
+#         reverse=True  
+#     )
+
+#     if not csv_files:
+#         return {"status": "error", "message": "No CSV file found for prediction"}
+
+#     latest_file = csv_files[0]
+#     df = pd.read_csv(latest_file)
+
+#     # Step 1: Apply Z-score Normalization
+#     df = normalize_data(df)
+
+#     # Step 2: Extract Features
+#     feature_data = extract_features_sliding_window(df)
+
+#     # Step 3: Save Features to CSV
+#     feature_data.to_csv(FEATURES_FILE, index=False)
+
+#     # Step 4: Perform Prediction
+#     predictions = model.predict(feature_data)
+
+#     return {"status": "success", "predictions": predictions.tolist()}
 @app.get("/predict")
 async def run_ml_prediction():
     """Runs ML prediction on the latest stored CSV file and returns output"""
+
+    # Step 1: Find the latest CSV file
     csv_files = sorted(
         [f for f in os.listdir() if f.startswith(CSV_BASE_NAME) and f.endswith(CSV_EXTENSION)],
         key=lambda x: int(x.split("_")[-1].split(".")[0]),
@@ -189,18 +219,77 @@ async def run_ml_prediction():
         return {"status": "error", "message": "No CSV file found for prediction"}
 
     latest_file = csv_files[0]
-    df = pd.read_csv(latest_file)
+    print(f"🔍 Using file: {latest_file}")
 
-    # Step 1: Apply Z-score Normalization
-    df = normalize_data(df)
+    # Step 2: Load CSV
+    try:
+        df = pd.read_csv(latest_file)
+        print(f"📊 Loaded Data Shape: {df.shape}")
+        print(df.head())
 
-    # Step 2: Extract Features
-    feature_data = extract_features_sliding_window(df)
+        if df.empty:
+            return {"status": "error", "message": "CSV file is empty"}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to read CSV: {e}"}
 
-    # Step 3: Save Features to CSV
-    feature_data.to_csv(FEATURES_FILE, index=False)
+    # Step 3: Handle Missing Values (NaN)
+    try:
+        missing_values = df.isnull().sum().sum()
+        if missing_values > 0:
+            print(f"⚠️ Warning: Found {missing_values} missing values in data.")
+            df = df.fillna(df.mean())  # Impute missing values with column mean
+            print("✅ Missing values handled using column mean.")
+    except Exception as e:
+        return {"status": "error", "message": f"NaN handling failed: {e}"}
 
-    # Step 4: Perform Prediction
-    predictions = model.predict(feature_data)
+    # Step 4: Apply Z-score Normalization
+    try:
+        df = normalize_data(df)
+        print("✅ Normalization complete")
+    except Exception as e:
+        return {"status": "error", "message": f"Normalization failed: {e}"}
+
+    # Step 5: Extract Features
+    try:
+        feature_data = extract_features_sliding_window(df)
+        print(f"🧩 Extracted Feature Shape: {feature_data.shape}")
+        print(feature_data.head())
+
+        if feature_data.empty:
+            return {"status": "error", "message": "Feature extraction returned empty data"}
+    except Exception as e:
+        return {"status": "error", "message": f"Feature extraction failed: {e}"}
+
+    # Step 6: Handle Missing Values in Features (NaN)
+    try:
+        missing_features = feature_data.isnull().sum().sum()
+        if missing_features > 0:
+            print(f"⚠️ Warning: Found {missing_features} missing values in extracted features.")
+            feature_data = feature_data.fillna(0)  # Replace NaNs with 0
+            print("✅ NaN values in features replaced with 0.")
+    except Exception as e:
+        return {"status": "error", "message": f"NaN handling in features failed: {e}"}
+
+    # Step 7: Save Features to CSV
+    try:
+        feature_data.to_csv(FEATURES_FILE, index=False)
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to save features CSV: {e}"}
+
+    # Step 8: Perform Prediction
+    try:
+        expected_features = model.n_features_in_
+        actual_features = feature_data.shape[1]
+
+        if actual_features != expected_features:
+            return {
+                "status": "error",
+                "message": f"Feature count mismatch: Model expects {expected_features}, but got {actual_features}"
+            }
+
+        predictions = model.predict(feature_data)
+        print(f"🔮 Predictions: {predictions.tolist()}")
+    except Exception as e:
+        return {"status": "error", "message": f"Model prediction failed: {e}"}
 
     return {"status": "success", "predictions": predictions.tolist()}
